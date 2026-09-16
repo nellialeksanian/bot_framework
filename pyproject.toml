@@ -24,6 +24,7 @@ dev = ["pytest", "pytest-asyncio", "reportlab"]
 # используют только один из двух. См. botkit/rag/embeddings.py.
 huggingface = ["langchain-huggingface>=0.1", "sentence-transformers>=3.0"]
 infinity = ["langchain-community>=0.3"]
+progress = ["tqdm>=4.60"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

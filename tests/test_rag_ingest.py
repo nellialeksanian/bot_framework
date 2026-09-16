@@ -208,6 +208,28 @@ def test_ingest_pdf_reports_progress_per_page(tmp_path):
     assert calls == []
 
 
+def test_ingest_pdf_calls_progress_exactly_once_per_page(tmp_path):
+    # on_progress must fire exactly once per page — not once during text
+    # extraction and again after chunking, which would make a progress
+    # bar (e.g. tqdm_progress) emit the same (done, total) pair twice and
+    # print a duplicate 100% line at the end.
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    pdf_path = tmp_path / "three_pages.pdf"
+    c = canvas.Canvas(str(pdf_path), pagesize=letter)
+    for i in range(3):
+        c.setFont("Helvetica", 12)
+        c.drawString(72, 700, f"Page {i + 1}. This is a normal readable sentence.")
+        c.showPage()
+    c.save()
+
+    calls: list[tuple[int, int]] = []
+    ingest_pdf(str(pdf_path), language="english", on_progress=lambda done, total: calls.append((done, total)))
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
 def test_ingest_docx_reports_progress_per_chapter(tmp_path):
     docx_path = tmp_path / "sample.docx"
     doc = docx_lib.Document()

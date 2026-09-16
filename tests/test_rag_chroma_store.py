@@ -121,3 +121,36 @@ async def test_ingest_unsupported_extension_reports_error(tmp_path):
     report = await store.ingest(str(bad_file))
     assert report.chunks_added == 0
     assert any("unsupported_extension" in e for e in report.errors)
+
+
+@pytest.mark.asyncio
+async def test_ingest_shows_tqdm_progress_by_default(tmp_path, capsys):
+    # tqdm is a dev/test-env dependency here — its presence is what makes
+    # this test meaningful: on_progress not passed at all should still
+    # produce visible progress output, not silence.
+    csv_path = _make_csv(tmp_path)
+    store = ChromaVectorStore(
+        embedder_config=EMBEDDER,
+        persist_path=str(tmp_path / "db"),
+        collection="test_collection",
+    )
+
+    await store.ingest(csv_path)  # on_progress not passed at all
+
+    captured = capsys.readouterr()
+    assert "docs.csv" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_ingest_on_progress_false_disables_default_tqdm(tmp_path, capsys):
+    csv_path = _make_csv(tmp_path)
+    store = ChromaVectorStore(
+        embedder_config=EMBEDDER,
+        persist_path=str(tmp_path / "db"),
+        collection="test_collection",
+    )
+
+    await store.ingest(csv_path, on_progress=False)
+
+    captured = capsys.readouterr()
+    assert "docs.csv" not in captured.err

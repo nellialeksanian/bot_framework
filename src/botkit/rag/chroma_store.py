@@ -10,12 +10,33 @@ from __future__ import annotations
 
 import hashlib
 import os
+from typing import Literal
 
 import chromadb
 
-from botkit.rag.base import Chunk, IngestReport
+from botkit.rag.base import Chunk, IngestReport, OnProgress
 from botkit.rag.embeddings import Embedder, EmbedderConfig, load_embedder
-from botkit.rag.ingest import OnProgress, ingest_csv, ingest_docx, ingest_pdf
+from botkit.rag.ingest import ingest_csv, ingest_docx, ingest_pdf
+
+
+def _default_on_progress(label: str) -> OnProgress | None:
+    # По умолчанию (on_progress не передан явно) пробуем показать tqdm-бар —
+    # только если tqdm установлен; если нет, тихо ничего не показываем,
+    # как и раньше. on_progress=False (не None) явно отключает это.
+    try:
+        from botkit.rag.progress import tqdm_progress
+    except ImportError:
+        return None
+    try:
+        return tqdm_progress(label)
+    except ImportError:
+        return None
+
+
+_EMBED_BATCH_SIZE = 64
+"""Сколько чанков эмбеддится и пишется в Chroma за один вызов
+add_documents(). Меньше — чаще обновляется прогресс, но больше накладных
+расходов на сам вызов; выбрано эмпирически, без глубокого тюнинга."""
 
 _EMBEDDER_NAME_KEY = "botkit_embedder_name"
 """Ключ в collection_metadata Chroma, под которым хранится имя эмбеддера,
@@ -98,20 +119,30 @@ class ChromaVectorStore:
         documents_path: str,
         collection: str | None = None,
         *,
-        on_progress: OnProgress | None = None,
+        on_progress: OnProgress | Literal[False] | None = None,
     ) -> IngestReport:
         """collection — принято для совместимости с VectorStore Protocol;
         эта реализация всегда пишет в self.collection_name, заданную в
         конструкторе (одна коллекция = один store = один проверенный
         эмбеддер, см. EmbedderMismatchError).
 
-        on_progress(done, total) — прогресс парсинга/чанкинга файла
-        (страница PDF / глава DOCX / строка CSV), вызывается синхронно
-        внутри ingest_csv/ingest_pdf/ingest_docx. Запись самих чанков в
-        Chroma (self._add_chunks) идёт одним батчем после парсинга и
-        прогресс не эмитит — на корпусах, использованных при разработке
-        (тысячи чанков), эта часть быстрее самого парсинга на порядок
-        и не была узким местом при замере (см. историю разработки rag/)."""
+        on_progress(done, total) — прогресс извлечения текста (страница PDF
+        / глава DOCX / строка CSV). Замерено (445-страничная книга): это
+        самый долгий этап ~17s, против ~0.01s на сам чанкинг того же
+        объёма текста — прогресс идёт именно здесь, не после того как весь
+        текст уже извлечён. Эмбеддинги (self._add_chunks ниже) — отдельный,
+        тоже долгий этап (~12.5s на той же книге, 1718 чанков) со своим
+        прогресс-баром на число чанков, не страниц — оба идут
+        ПОСЛЕДОВАТЕЛЬНО как два разных tqdm-бара, не смешиваются в один
+        процент (страницы и чанки — разные единицы, разное их количество).
+
+        По умолчанию (on_progress не передан, т.е. None) при установленном
+        tqdm автоматически показываются оба бара — вызывать ingest() без
+        какого-либо прогресса на молчаливом терминале не нужно. Передайте
+        on_progress=False, чтобы явно отключить оба этапа, или свой
+        callback (применяется только к этапу извлечения текста; для этапа
+        эмбеддингов в этом случае прогресс не показывается — свой callback
+        для этого этапа сейчас не настраивается отдельно)."""
         if collection is not None and collection != self.collection_name:
             raise ValueError(
                 f"This ChromaVectorStore instance is bound to collection "
@@ -119,24 +150,31 @@ class ChromaVectorStore:
                 f"Create a separate ChromaVectorStore for a different collection."
             )
 
+        label = os.path.basename(documents_path)
+        use_default = on_progress is None
+        extract_progress = _default_on_progress(f"{label} (текст)") if use_default else (
+            None if on_progress is False else on_progress
+        )
+
         ext = os.path.splitext(documents_path)[1].lower()
         if ext == ".csv":
-            chunks, report = ingest_csv(documents_path, on_progress=on_progress)
+            chunks, report = ingest_csv(documents_path, on_progress=extract_progress)
         elif ext == ".pdf":
-            chunks, report = ingest_pdf(documents_path, on_progress=on_progress)
+            chunks, report = ingest_pdf(documents_path, on_progress=extract_progress)
         elif ext == ".docx":
-            chunks, report = ingest_docx(documents_path, on_progress=on_progress)
+            chunks, report = ingest_docx(documents_path, on_progress=extract_progress)
         else:
             return IngestReport(
                 chunks_added=0, warnings=[], errors=[f"unsupported_extension: {ext}"]
             )
 
         if chunks:
-            self._add_chunks(chunks)
+            embed_progress = _default_on_progress(f"{label} (эмбеддинги)") if use_default else None
+            self._add_chunks(chunks, on_progress=embed_progress)
 
         return report
 
-    def _add_chunks(self, chunks: list[Chunk]) -> None:
+    def _add_chunks(self, chunks: list[Chunk], *, on_progress: OnProgress | None = None) -> None:
         from langchain_core.documents import Document
 
         ids = [_chunk_id(c) for c in chunks]
@@ -144,7 +182,13 @@ class ChromaVectorStore:
             Document(page_content=c.text, metadata={**c.metadata, "collection": self.collection_name})
             for c in chunks
         ]
-        self._store.add_documents(docs, ids=ids)
+
+        total = len(docs)
+        for start in range(0, total, _EMBED_BATCH_SIZE):
+            end = min(start + _EMBED_BATCH_SIZE, total)
+            self._store.add_documents(docs[start:end], ids=ids[start:end])
+            if on_progress is not None:
+                on_progress(end, total)
 
     async def search(self, query: str, k: int) -> list[Chunk]:
         results = self._store.similarity_search(query, k=k)

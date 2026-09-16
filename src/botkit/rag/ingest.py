@@ -11,18 +11,10 @@ from __future__ import annotations
 import csv as csv_module
 import os
 from datetime import datetime, timezone
-from typing import Callable
 
-from botkit.rag.base import Chunk, IngestReport
+from botkit.rag.base import Chunk, IngestReport, OnProgress
 from botkit.rag.quality import page_quality_warning
 from botkit.rag.splitting import sentence_aware_chunks
-
-OnProgress = Callable[[int, int], None]
-"""on_progress(done, total) — вызывается после каждой обработанной единицы
-(строка CSV / страница PDF / глава DOCX). total может быть 0, если общее
-число заранее неизвестно (например, DOCX-параграфы до группировки по
-главам) — вызывающий код сам решает, как это показать (print, tqdm,
-логгер, прогресс-бар в UI бота); библиотека не форматирует вывод сама."""
 
 
 def _now_iso() -> str:
@@ -129,11 +121,14 @@ def ingest_pdf(
     остальные страницы того же документа индексируются нормально.
     Чанкинг — sentence-aware (splitting.py), никогда не обрывает предложение.
 
-    on_progress(page_done, total_pages) вызывается дважды на страницу —
-    один раз при извлечении текста (медленный этап на больших PDF), один
-    раз после чанкинга/quality-проверки этой же страницы (быстрый этап) —
-    так вызывающий код видит прогресс на протяжении всего файла, а не
-    только в начале извлечения текста.
+    on_progress(page_done, total_pages) вызывается во время извлечения
+    текста pdfplumber-ом — это самый долгий этап на больших PDF (замерено:
+    ~17s на 445-страничной книге против ~0.01s на сам чанкинг того же
+    объёма текста), поэтому прогресс должен идти именно здесь, а не только
+    после того как весь текст уже извлечён. Чанкинг (второй проход ниже)
+    on_progress не вызывает — иначе один и тот же (done, total) повторялся
+    бы дважды на странице (см. коммит, исправлявший именно это дублирование
+    ранее — регрессия при повторном добавлении прогресса не нужна).
     """
     warnings: list[str] = []
     errors: list[str] = []
@@ -148,14 +143,11 @@ def ingest_pdf(
     source = os.path.basename(pdf_path)
     ingested_at = _now_iso()
     chunk_index = 0
-    total_pages = len(pages)
 
     for page_number, page_text in enumerate(pages, start=1):
         warning = page_quality_warning(page_text, page_number=page_number)
         if warning is not None:
             warnings.append(warning)
-            if on_progress is not None:
-                on_progress(page_number, total_pages)
             continue
 
         for chunk_text in sentence_aware_chunks(
@@ -175,9 +167,6 @@ def ingest_pdf(
                 )
             )
             chunk_index += 1
-
-        if on_progress is not None:
-            on_progress(page_number, total_pages)
 
     report = IngestReport(chunks_added=len(chunks), warnings=warnings, errors=errors)
     return chunks, report
