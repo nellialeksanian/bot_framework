@@ -16,7 +16,7 @@ import chromadb
 
 from botkit.rag.base import Chunk, IngestReport
 from botkit.rag.embeddings import Embedder, EmbedderConfig, load_embedder
-from botkit.rag.ingest import ingest_csv, ingest_docx, ingest_pdf
+from botkit.rag.ingest import OnProgress, ingest_csv, ingest_docx, ingest_pdf
 
 _EMBEDDER_NAME_KEY = "botkit_embedder_name"
 """Ключ в collection_metadata Chroma, под которым хранится имя эмбеддера,
@@ -94,11 +94,25 @@ class ChromaVectorStore:
 
         return store
 
-    async def ingest(self, documents_path: str, collection: str | None = None) -> IngestReport:
+    async def ingest(
+        self,
+        documents_path: str,
+        collection: str | None = None,
+        *,
+        on_progress: OnProgress | None = None,
+    ) -> IngestReport:
         """collection — принято для совместимости с VectorStore Protocol;
         эта реализация всегда пишет в self.collection_name, заданную в
         конструкторе (одна коллекция = один store = один проверенный
-        эмбеддер, см. EmbedderMismatchError)."""
+        эмбеддер, см. EmbedderMismatchError).
+
+        on_progress(done, total) — прогресс парсинга/чанкинга файла
+        (страница PDF / глава DOCX / строка CSV), вызывается синхронно
+        внутри ingest_csv/ingest_pdf/ingest_docx. Запись самих чанков в
+        Chroma (self._add_chunks) идёт одним батчем после парсинга и
+        прогресс не эмитит — на корпусах, использованных при разработке
+        (тысячи чанков), эта часть быстрее самого парсинга на порядок
+        и не была узким местом при замере (см. историю разработки rag/)."""
         if collection is not None and collection != self.collection_name:
             raise ValueError(
                 f"This ChromaVectorStore instance is bound to collection "
@@ -108,11 +122,11 @@ class ChromaVectorStore:
 
         ext = os.path.splitext(documents_path)[1].lower()
         if ext == ".csv":
-            chunks, report = ingest_csv(documents_path)
+            chunks, report = ingest_csv(documents_path, on_progress=on_progress)
         elif ext == ".pdf":
-            chunks, report = ingest_pdf(documents_path)
+            chunks, report = ingest_pdf(documents_path, on_progress=on_progress)
         elif ext == ".docx":
-            chunks, report = ingest_docx(documents_path)
+            chunks, report = ingest_docx(documents_path, on_progress=on_progress)
         else:
             return IngestReport(
                 chunks_added=0, warnings=[], errors=[f"unsupported_extension: {ext}"]

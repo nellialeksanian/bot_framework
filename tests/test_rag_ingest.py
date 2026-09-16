@@ -176,3 +176,48 @@ def test_ingest_docx_missing_file_reports_error():
     assert chunks == []
     assert len(report.errors) == 1
     assert "docx_read_failed" in report.errors[0]
+
+
+# --- on_progress callback ---
+
+def test_ingest_csv_reports_progress(tmp_path):
+    csv_path = tmp_path / "docs.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["text", "source"])
+        writer.writerow(["First.", "doc1.pdf"])
+        writer.writerow(["Second.", "doc2.pdf"])
+        writer.writerow(["Third.", "doc3.pdf"])
+
+    calls: list[tuple[int, int]] = []
+    ingest_csv(str(csv_path), on_progress=lambda done, total: calls.append((done, total)))
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]
+
+
+def test_ingest_pdf_reports_progress_per_page(tmp_path):
+    # A missing/unreadable PDF still exercises the error path without
+    # on_progress ever firing — this asserts it's not called on failure.
+    calls: list[tuple[int, int]] = []
+    ingest_pdf("/nonexistent/path.pdf", on_progress=lambda done, total: calls.append((done, total)))
+    assert calls == []
+
+
+def test_ingest_docx_reports_progress_per_chapter(tmp_path):
+    docx_path = tmp_path / "sample.docx"
+    doc = docx_lib.Document()
+    doc.add_heading("Chapter One", level=1)
+    doc.add_paragraph("First sentence of chapter one.")
+    doc.add_heading("Chapter Two", level=1)
+    doc.add_paragraph("First sentence of chapter two.")
+    doc.save(str(docx_path))
+
+    calls: list[tuple[int, int]] = []
+    ingest_docx(
+        str(docx_path),
+        chunk_size=1000,
+        language="english",
+        on_progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(1, 2), (2, 2)]

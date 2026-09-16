@@ -11,17 +11,27 @@ from __future__ import annotations
 import csv as csv_module
 import os
 from datetime import datetime, timezone
+from typing import Callable
 
 from botkit.rag.base import Chunk, IngestReport
 from botkit.rag.quality import page_quality_warning
 from botkit.rag.splitting import sentence_aware_chunks
+
+OnProgress = Callable[[int, int], None]
+"""on_progress(done, total) — вызывается после каждой обработанной единицы
+(строка CSV / страница PDF / глава DOCX). total может быть 0, если общее
+число заранее неизвестно (например, DOCX-параграфы до группировки по
+главам) — вызывающий код сам решает, как это показать (print, tqdm,
+логгер, прогресс-бар в UI бота); библиотека не форматирует вывод сама."""
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def ingest_csv(csv_path: str) -> tuple[list[Chunk], IngestReport]:
+def ingest_csv(
+    csv_path: str, *, on_progress: OnProgress | None = None
+) -> tuple[list[Chunk], IngestReport]:
     """Каждая строка CSV становится одним Chunk. Обязательна колонка
     'source' — её отсутствие останавливает ingest до записи чего-либо
     (fail fast), а не пропускает строки молча. Требует колонку 'text'
@@ -45,11 +55,14 @@ def ingest_csv(csv_path: str) -> tuple[list[Chunk], IngestReport]:
             raise ValueError(f"CSV is missing required 'text' column: {csv_path}")
 
         ingested_at = _now_iso()
+        total_rows = sum(1 for _ in open(csv_path, encoding="utf-8")) - 1  # минус заголовок
 
         for row_idx, row in enumerate(reader):
             text = (row.get("text") or "").strip()
             if not text:
                 warnings.append(f"empty_text_row_{row_idx}")
+                if on_progress is not None:
+                    on_progress(row_idx + 1, total_rows)
                 continue
 
             metadata: dict = {}
@@ -77,18 +90,23 @@ def ingest_csv(csv_path: str) -> tuple[list[Chunk], IngestReport]:
                     metadata=metadata,
                 )
             )
+            if on_progress is not None:
+                on_progress(row_idx + 1, total_rows)
 
     report = IngestReport(chunks_added=len(chunks), warnings=warnings, errors=errors)
     return chunks, report
 
 
-def _extract_pdf_pages(pdf_path: str) -> list[str]:
+def _extract_pdf_pages(pdf_path: str, *, on_progress: OnProgress | None = None) -> list[str]:
     import pdfplumber
 
     pages: list[str] = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
+        total = len(pdf.pages)
+        for i, page in enumerate(pdf.pages, start=1):
             pages.append(page.extract_text() or "")
+            if on_progress is not None:
+                on_progress(i, total)
     return pages
 
 
@@ -98,18 +116,25 @@ def ingest_pdf(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
     language: str = "russian",
+    on_progress: OnProgress | None = None,
 ) -> tuple[list[Chunk], IngestReport]:
     """Извлекает текст постранично, проверяет каждую страницу на скан/
     кракозябры (quality.py) — проблемная страница пропускается с warning,
     остальные страницы того же документа индексируются нормально.
     Чанкинг — sentence-aware (splitting.py), никогда не обрывает предложение.
+
+    on_progress(page_done, total_pages) вызывается дважды на страницу —
+    один раз при извлечении текста (медленный этап на больших PDF), один
+    раз после чанкинга/quality-проверки этой же страницы (быстрый этап) —
+    так вызывающий код видит прогресс на протяжении всего файла, а не
+    только в начале извлечения текста.
     """
     warnings: list[str] = []
     errors: list[str] = []
     chunks: list[Chunk] = []
 
     try:
-        pages = _extract_pdf_pages(pdf_path)
+        pages = _extract_pdf_pages(pdf_path, on_progress=on_progress)
     except Exception as e:
         errors.append(f"pdf_read_failed: {type(e).__name__}: {e}")
         return [], IngestReport(chunks_added=0, warnings=warnings, errors=errors)
@@ -117,11 +142,14 @@ def ingest_pdf(
     source = os.path.basename(pdf_path)
     ingested_at = _now_iso()
     chunk_index = 0
+    total_pages = len(pages)
 
     for page_number, page_text in enumerate(pages, start=1):
         warning = page_quality_warning(page_text, page_number=page_number)
         if warning is not None:
             warnings.append(warning)
+            if on_progress is not None:
+                on_progress(page_number, total_pages)
             continue
 
         for chunk_text in sentence_aware_chunks(
@@ -141,6 +169,9 @@ def ingest_pdf(
                 )
             )
             chunk_index += 1
+
+        if on_progress is not None:
+            on_progress(page_number, total_pages)
 
     report = IngestReport(chunks_added=len(chunks), warnings=warnings, errors=errors)
     return chunks, report
@@ -170,9 +201,13 @@ def ingest_docx(
     chunk_size: int = 1000,
     chunk_overlap: int = 200,
     language: str = "russian",
+    on_progress: OnProgress | None = None,
 ) -> tuple[list[Chunk], IngestReport]:
     """DOCX не имеет "страниц" на уровне формата — chapter извлекается
     эвристически по параграфам со стилем Heading*, page остаётся None.
+
+    on_progress(group_done, total_groups) — группа здесь соответствует
+    главе (тексту между двумя заголовками Heading*), а не странице.
     """
     warnings: list[str] = []
     errors: list[str] = []
@@ -201,8 +236,12 @@ def ingest_docx(
             groups.append((current_chapter, []))
         groups[-1][1].append(text)
 
-    for chapter, texts in groups:
+    total_groups = len(groups)
+
+    for group_index, (chapter, texts) in enumerate(groups, start=1):
         if not texts:
+            if on_progress is not None:
+                on_progress(group_index, total_groups)
             continue
         full_text = "\n".join(texts)
 
@@ -212,6 +251,8 @@ def ingest_docx(
             # чтобы сообщение оставалось информативным без ложной "страницы".
             label = chapter or "document"
             warnings.append(warning.replace("_page_", f"_chapter_{label}_"))
+            if on_progress is not None:
+                on_progress(group_index, total_groups)
             continue
 
         for chunk_text in sentence_aware_chunks(
@@ -234,6 +275,9 @@ def ingest_docx(
                 )
             )
             chunk_index += 1
+
+        if on_progress is not None:
+            on_progress(group_index, total_groups)
 
     report = IngestReport(chunks_added=len(chunks), warnings=warnings, errors=errors)
     return chunks, report
