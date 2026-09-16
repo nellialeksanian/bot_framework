@@ -17,8 +17,11 @@ class Chunk:
     metadata: dict
 
 
+@dataclass
 class IngestReport:
-    ...
+    chunks_added: int
+    warnings: list[str]
+    errors: list[str]
 
 
 class VectorStore(Protocol):
