@@ -12,10 +12,18 @@ dependencies = [
     "nltk>=3.8",
     "pdfplumber>=0.11",
     "python-docx>=1.1",
+    "chromadb>=1.0",
+    "langchain-core>=0.3",
+    "langchain-chroma>=0.2",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "reportlab"]
+# Эмбеддеры — опциональны, чтобы не тянуть тяжёлые torch/transformers
+# (huggingface) или langchain-community (infinity) в деплойменты, которые
+# используют только один из двух. См. botkit/rag/embeddings.py.
+huggingface = ["langchain-huggingface>=0.1", "sentence-transformers>=3.0"]
+infinity = ["langchain-community>=0.3"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
