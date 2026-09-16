@@ -33,8 +33,10 @@ class VectorStore(Protocol):
     ) -> list[Chunk]:
         ...
 
-    async def search_multi(self, query: str, collections: list[str]) -> dict[str, list[Chunk]]:
-        ...
+
+# Поиск по нескольким коллекциям одновременно — не метод VectorStore
+# (каждый VectorStore отвечает за одну коллекцию), а отдельная функция
+# над несколькими уже открытыми store: см. botkit.rag.multi_search.search_across().
 
 
 def format_citation(chunk: Chunk) -> str:

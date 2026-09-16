@@ -127,7 +127,10 @@ class ChromaVectorStore:
         from langchain_core.documents import Document
 
         ids = [_chunk_id(c) for c in chunks]
-        docs = [Document(page_content=c.text, metadata=c.metadata) for c in chunks]
+        docs = [
+            Document(page_content=c.text, metadata={**c.metadata, "collection": self.collection_name})
+            for c in chunks
+        ]
         self._store.add_documents(docs, ids=ids)
 
     async def search(
@@ -145,15 +148,10 @@ class ChromaVectorStore:
             for doc in results
         ]
 
-    async def search_multi(self, query: str, collections: list[str]) -> dict[str, list[Chunk]]:
-        # Одна коллекция на инстанс (см. ingest()) — мульти-коллекционный
-        # поиск здесь не поддержан на уровне одного ChromaVectorStore;
-        # MultiVectorStore, оркеструющий несколько инстансов, — отдельная
-        # реализация поверх этой, не входит в текущий объём (ingest-часть A3).
-        raise NotImplementedError(
-            "search_multi requires a MultiVectorStore over several ChromaVectorStore "
-            "instances — not implemented in this pass (see botkit.rag roadmap)."
-        )
+    # Поиск сразу по нескольким коллекциям — это не метод одного store
+    # (у одного ChromaVectorStore всегда ровно одна коллекция, см. ingest()
+    # выше), а отдельная функция над несколькими уже созданными store:
+    # см. botkit.rag.multi_search.search_across().
 
 
 def format_citation(chunk: Chunk) -> str:
