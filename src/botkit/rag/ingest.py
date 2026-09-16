@@ -77,7 +77,13 @@ def ingest_csv(
                     source_value = clean_value
 
             if not source_value:
+                # Инвариант A3: каждый Chunk обязан иметь source, иначе не
+                # проходит в контекст — строка без source не индексируется,
+                # а не проходит с пустым полем ("модель выдумала источник").
                 warnings.append(f"empty_source_row_{row_idx}")
+                if on_progress is not None:
+                    on_progress(row_idx + 1, total_rows)
+                continue
 
             metadata["ingested_at"] = ingested_at
 

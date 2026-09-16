@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Protocol
 
 
 @dataclass
@@ -28,9 +28,7 @@ class VectorStore(Protocol):
     async def ingest(self, documents_path: str, collection: str) -> IngestReport:
         ...
 
-    async def search(
-        self, query: str, k: int, strategy: Literal["chunks", "full_case"] = "chunks"
-    ) -> list[Chunk]:
+    async def search(self, query: str, k: int) -> list[Chunk]:
         ...
 
 

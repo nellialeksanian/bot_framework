@@ -55,16 +55,21 @@ def test_ingest_csv_happy_path(tmp_path):
     assert chunks[1].source == "doc2.pdf"
 
 
-def test_ingest_csv_warns_on_empty_source(tmp_path):
+def test_ingest_csv_rejects_rows_with_empty_source(tmp_path):
+    # Инвариант A3: каждый Chunk обязан иметь source, иначе не проходит
+    # в контекст — строка без source не индексируется, а не попадает с
+    # пустым полем и warning-ом.
     csv_path = tmp_path / "empty_source.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["text", "source"])
         writer.writerow(["Some text.", ""])
+        writer.writerow(["Other text.", "doc2.pdf"])
 
     chunks, report = ingest_csv(str(csv_path))
 
     assert len(chunks) == 1
+    assert chunks[0].source == "doc2.pdf"
     assert any("empty_source_row_0" in w for w in report.warnings)
 
 

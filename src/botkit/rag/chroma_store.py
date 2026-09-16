@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-from typing import Literal
 
 import chromadb
 
@@ -147,9 +146,7 @@ class ChromaVectorStore:
         ]
         self._store.add_documents(docs, ids=ids)
 
-    async def search(
-        self, query: str, k: int, strategy: Literal["chunks", "full_case"] = "chunks"
-    ) -> list[Chunk]:
+    async def search(self, query: str, k: int) -> list[Chunk]:
         results = self._store.similarity_search(query, k=k)
         return [
             Chunk(
