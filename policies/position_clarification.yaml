@@ -1,0 +1,39 @@
+# Пример SupportPolicy — необязательный оверрайд, не основной путь.
+#
+# Основной путь: SupportPolicy создаётся в Python-коде рядом с определением
+# skill и передаётся при регистрации —
+#   router.register_skill(name=..., handler=..., support_policy=SupportPolicy(...))
+# см. "docs/B1 — Dialogue Policy Engine — assumption doc.md", раздел 4.
+#
+# Этот файл нужен только тогда, когда policy для уже зарегистрированного
+# навыка требуется поменять без правки и передеплоя кода (напр. эксперимент
+# или A/B-тест формулировок deny_patterns). DialoguePolicyEngine, если найдёт
+# файл с именем skill в policies/, использует его вместо policy, переданной
+# в register_skill().
+#
+# Соответствует навыку position_clarification из dialogic_supportive_bot
+# (app/skills.py) — секция "## What You Must Not Do" того промпта здесь
+# выражена как deny_patterns, а не переписана текстом заново.
+
+policy_id: position_clarification_v1
+version: 1
+
+target_action: "сформулировать собственный тезис"
+protected_difficulty: "переход от смутной идеи к чёткой формулировке позиции"
+
+# CP11A: не применимо — это первый контакт с идеей, предшествующей попытки нет
+attempt_gate: false
+
+allowed_action_classes:
+  - reflect
+  - affirm
+  - question
+
+# CP11B: явные запреты, подставляются в промпт автоматически движком
+deny_patterns:
+  - "не формулируй тезис за студента"
+  - "не спорь с позицией студента"
+  - "не предлагай альтернативный фреймворк как более верный"
+  - "не переходи к развитию аргументации — только прояснение позиции"
+
+fading_rule: null
