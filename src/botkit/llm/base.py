@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 
+@dataclass
 class LLMResponse:
     response: str
     raw: str
