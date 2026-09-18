@@ -96,6 +96,53 @@ class RubricStore(Protocol):
         ...
 
 
+def _dimensions_equal(a: list[Criterion], b: list[Criterion]) -> bool:
+    # Сравнение по содержимому (dimension_id, label, anchor_examples), а не
+    # по идентичности объектов — код каждый раз создаёт новые Criterion при
+    # запуске процесса, объекты никогда не будут одним и тем же объектом.
+    if len(a) != len(b):
+        return False
+    return all(
+        x.dimension_id == y.dimension_id and x.label == y.label and x.anchor_examples == y.anchor_examples
+        for x, y in zip(a, b)
+    )
+
+
+async def sync_package(store: RubricStore, domain: str, dimensions: list[Criterion]) -> CriterionPackage:
+    """Приводит активный CriterionPackage в domain в соответствие с
+    dimensions, заданными в коде — без ручного вызова register_package() на
+    каждый рестарт процесса и без версионирования там, где критерии не
+    менялись.
+
+    get_active_package() у конкретных реализаций RubricStore бросает свой
+    собственный exception, когда активного пакета нет (например,
+    NoActivePackageError в SQLiteRubricStore) — RubricStore (Protocol) не
+    фиксирует его конкретный тип, поэтому здесь ловится Exception широко и
+    трактуется как "пакета ещё нет, нужно зарегистрировать первую версию".
+
+    - Активного пакета нет вообще -> регистрирует и активирует первую версию.
+    - Активный пакет есть, но его dimensions отличаются от переданных
+      (другой набор dimension_id, или изменился label/anchor_examples у
+      существующего) -> регистрирует НОВУЮ версию и активирует её; прежняя
+      версия становится "superseded" (activate_package() делает это сама),
+      не удаляется — вся история критериев остаётся в БД, просто неактивна.
+    - Активный пакет уже совпадает по содержимому -> ничего не делает,
+      возвращает его как есть (без создания версии-дубликата).
+
+    Вызывается при каждом старте процесса — редактирование критериев
+    сводится к правке списка Criterion в коде и рестарту бота, без ручного
+    вызова register_package()/activate_package() из отдельного скрипта."""
+    try:
+        active = await store.get_active_package(domain)
+    except Exception:
+        active = None
+
+    if active is not None and _dimensions_equal(active.dimensions, dimensions):
+        return active
+
+    return await store.register_package(domain, dimensions, activate=True)
+
+
 def render_criteria_block(package: CriterionPackage) -> str:
     """Рендерит dimensions пакета в текст для вставки в промпт навыка —
     инвариант B3: навык не изобретает названия меток текстом в промпте,
