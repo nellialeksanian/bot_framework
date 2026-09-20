@@ -10,3 +10,5 @@ build/
 # Рабочие/черновые заметки по разработке — не для публикации в репозитории
 docs/B1 — Dialogue Policy Engine — assumption doc.md
 *.sqlite3
+
+examples/minimal_bot/
