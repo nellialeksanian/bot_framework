@@ -1,8 +1,14 @@
 # botkit — каркас фреймворка
 
-Скелет фреймворка по документу [«Модули фреймворка — приоритет.md»](docs/Модули%20фреймворка%20—%20приоритет.md).
+Каркас фреймворка по документу [«Модули фреймворка — приоритет.md»](docs/Модули%20фреймворка%20—%20приоритет.md).
 Каждый файл `src/botkit/*/base.py` содержит только сигнатуры (Protocol/dataclass) —
-без реализации. Это заготовка для реального кода, не рабочая библиотека.
+интерфейс модуля, который не меняется в зависимости от конкретной реализации.
+
+Часть модулей уже имеет рабочую реализацию поверх `base.py` (`attempts`,
+`dialog_policy`, `evidence`, `rag`, `rubric`, `simulation` — см. пометки в
+дереве структуры ниже), часть остаётся только контрактом без кода —
+реализация появляется по мере того, как конкретному боту требуется
+конкретный модуль, а не заранее для всех сразу.
 
 Пакет называется `botkit`, устанавливается как обычная Python-библиотека
 (`pip install`) — см. «Установка» ниже.
@@ -13,22 +19,28 @@
 pyproject.toml    манифест пакета — имя, версия, зависимости
 
 src/botkit/
-├── llm/          A1  LLM Provider Gateway
-├── usage/        A2  Usage & Cost Tracker
-├── rag/          A3  RAG Ingestion & Retrieval
-├── transport/    A4  Messenger Transport Adapter
-├── extraction/   A5  Content Extraction Layer
-├── dialog_policy/ B1 Dialogue Policy Engine   (SC01 + SC06)
-├── attempts/     B2  Attempt & Revision Store (SC07)
-├── rubric/       B3  Rubric & Taxonomy Store  (SC08)
-├── authority/    B4  Human Authority Gate     (SC14 + SC16)
-├── evidence/     B5  Evidence & Citation Layer (SC04 + SC05)
-└── simulation/   C1  Simulation & Scenario Engine (SC02 + SC03)
+├── llm/          A1  LLM Provider Gateway              — только base.py (Protocol)
+├── usage/        A2  Usage & Cost Tracker               — только base.py (Protocol)
+├── rag/          A3  RAG Ingestion & Retrieval           — реализован (chroma_store.py + др.)
+├── transport/    A4  Messenger Transport Adapter        — только base.py (Protocol)
+├── extraction/   A5  Content Extraction Layer            — только base.py (Protocol)
+├── dialog_policy/ B1 Dialogue Policy Engine   (SC01+SC06) — реализован (engine.py, intent_router.py)
+├── attempts/     B2  Attempt & Revision Store (SC07)      — реализован (sqlite_store.py, sessions.py)
+├── rubric/       B3  Rubric & Taxonomy Store  (SC08)      — реализован (sqlite_store.py)
+├── authority/    B4  Human Authority Gate     (SC14+SC16) — только base.py (Protocol)
+├── evidence/     B5  Evidence & Citation Layer (SC04+SC05) — реализован (llm_checker.py, sqlite_store.py)
+└── simulation/   C1  Simulation & Scenario Engine (SC02+SC03) — реализован (persona.py, scenario.py, routing.py)
 
 policies/         данные SupportPolicy / CriterionPackage (YAML) — по одной на навык
 tests/            тесты по модулям, зеркалят структуру src/botkit/
 docs/             исходные документы спецификации (см. ниже)
 ```
+
+«Только base.py» значит контракт готов (Protocol/dataclass), но ни одной
+конкретной реализации под него ещё не написано — `load_llm()` в `llm/base.py`,
+например, до сих пор пустая заглушка (`...`). Это не незавершённая работа
+сама по себе — реализация добавляется, когда её впервые требует конкретный
+бот (см. «Что не входит в каркас» ниже), а не заранее для всех модулей сразу.
 
 Код лежит под `src/`, а не прямо в корне репозитория — это стандартный
 `src`-layout: он не даёт случайно импортировать неустановленный пакет из
@@ -64,6 +76,8 @@ from botkit.dialog_policy.base import SupportPolicy
 Копии документов, на которых основан каркас — чтобы спецификация физически
 лежала рядом с кодом, а не только в родительской папке портфеля:
 
+**Спецификация и происхождение контрактов:**
+
 - [«Модули фреймворка — приоритет.md»](docs/Модули%20фреймворка%20—%20приоритет.md) —
   первоисточник структуры `framework/`, порядка внедрения и всех интерфейсов.
 - [«Модули фреймворка — будущее.md»](docs/Модули%20фреймворка%20—%20будущее.md) —
@@ -72,14 +86,30 @@ from botkit.dialog_policy.base import SupportPolicy
   разбор 15 реально реализованных ботов, на основе которого отобраны модули A1–A5.
 - [«Реестр контрактов SC01-SC20.md»](docs/Реестр%20контрактов%20SC01-SC20.md) —
   SC-каталог, источник контрактов и приоритетов для модулей B1–B5.
+- [«B1 — Dialogue Policy Engine — assumption doc.md»](docs/B1%20—%20Dialogue%20Policy%20Engine%20—%20assumption%20doc.md) —
+  почему интерфейс B1 выведен из живого кода 15 ботов, а не из SC-каталога (SC01 не извлечён формально).
+
+**Практические руководства («как пользоваться») по уже реализованным модулям:**
+
 - [«RAG — как пользоваться.md»](docs/RAG%20—%20как%20пользоваться.md) —
-  практическое руководство по `botkit.rag`: как вызывать ingest/search,
-  как выглядит финальный `Chunk` со всеми метаданными, что идёт в промпт модели.
+  `botkit.rag`: как вызывать ingest/search, как выглядит финальный `Chunk`
+  со всеми метаданными, что идёт в промпт модели.
+- [«Attempts — как пользоваться.md»](docs/Attempts%20—%20как%20пользоваться.md) —
+  `botkit.attempts`: `SQLiteAttemptStore`, `record_revision`, два режима
+  подключения `ActiveSessionResolver`.
+- [«Dialog Policy — как пользоваться.md»](docs/Dialog%20Policy%20—%20как%20пользоваться.md) —
+  `botkit.dialog_policy`: регистрация навыков, `IntentRouter`, `check_attempt_gate`/`render_support_block`.
+- [«Rubric — как пользоваться.md»](docs/Rubric%20—%20как%20пользоваться.md) —
+  `botkit.rubric`: `CriterionPackage`, `RaterRecord`, синхронизация версий критериев.
+- [«Evidence — как пользоваться.md»](docs/Evidence%20—%20как%20пользоваться.md) —
+  `botkit.evidence`: `LLMEvidenceChecker`, `SQLiteEvidenceStore`, `verify_and_record`,
+  связь с A3 (RAG retrieval vs entailment).
+- [«Simulation — как пользоваться.md»](docs/Simulation%20—%20как%20пользоваться.md) —
+  `botkit.simulation`: `PersonaSimulator`, `ScenarioGenerator`, интеграция с B1 через `route_or_continue`.
 
 При обновлении документа-первоисточника в родительской папке портфеля —
 копию в `docs/` нужно обновлять вручную (`cp`), автосинхронизации нет.
 
-
 ## Что не входит в каркас
 
-Доменная логика конкретного бота (например, проверка RACI-матриц) не являетсячастью фреймворка — она пишется поверх него в самом боте, используя эти модули как строительные блоки.
+Доменная логика конкретного бота (например, проверка RACI-матриц) не является частью фреймворка — она пишется поверх него в самом боте, используя эти модули как строительные блоки.
