@@ -167,3 +167,54 @@ async def test_data_survives_reopening_the_store(db_path):
     assert await reopened.latest("user-1", "task-1") == attempt
     response = await reopened.get_response(attempt.attempt_id)
     assert response.content == "persisted reply"
+
+
+async def test_active_session_defaults_to_none(store):
+    assert await store.get_active_session("user-1", "feedback") is None
+
+
+async def test_set_active_session_then_get_returns_it(store):
+    await store.set_active_session("user-1", "feedback", "feedback::abc123")
+
+    assert await store.get_active_session("user-1", "feedback") == "feedback::abc123"
+
+
+async def test_set_active_session_overwrites_previous_value(store):
+    await store.set_active_session("user-1", "feedback", "feedback::first")
+    await store.set_active_session("user-1", "feedback", "feedback::second")
+
+    assert await store.get_active_session("user-1", "feedback") == "feedback::second"
+
+
+async def test_active_session_is_independent_per_skill(store):
+    await store.set_active_session("user-1", "feedback", "feedback::ref")
+    await store.set_active_session("user-1", "text_analysis", "text_analysis::ref")
+
+    assert await store.get_active_session("user-1", "feedback") == "feedback::ref"
+    assert await store.get_active_session("user-1", "text_analysis") == "text_analysis::ref"
+
+
+async def test_active_session_is_independent_per_actor(store):
+    await store.set_active_session("user-1", "feedback", "feedback::user1-ref")
+    await store.set_active_session("user-2", "feedback", "feedback::user2-ref")
+
+    assert await store.get_active_session("user-1", "feedback") == "feedback::user1-ref"
+    assert await store.get_active_session("user-2", "feedback") == "feedback::user2-ref"
+
+
+async def test_active_session_does_not_pollute_attempts_table(store):
+    """Регрессионный тест для B2-рефакторинга: активная сессия хранится в
+    собственной таблице, а не как синтетическая Attempt-запись — latest()
+    по любому task_ref, связанному со служебным именем, не должен её видеть."""
+    await store.set_active_session("user-1", "feedback", "feedback::real-ref")
+
+    assert await store.latest("user-1", "feedback__active_session") is None
+
+
+async def test_active_session_survives_reopening_the_store(db_path):
+    store = SQLiteAttemptStore(db_path)
+    await store.set_active_session("user-1", "feedback", "feedback::persisted-ref")
+
+    reopened = SQLiteAttemptStore(db_path)
+
+    assert await reopened.get_active_session("user-1", "feedback") == "feedback::persisted-ref"

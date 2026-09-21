@@ -29,8 +29,9 @@
 # или отсутствие классификатора вовсе), а не основной путь каждого сообщения.
 #
 # Что вынесено сюда (доменно-нейтрально, одинаково для любого бота):
-#   - где хранится "текущая активная работа" — в том же AttemptStore, под
-#     служебным task_ref, а не в отдельной БД/файле;
+#   - где хранится "текущая активная работа" — в отдельной таблице
+#     active_sessions внутри AttemptStore (get/set_active_session), а не
+#     смешана с записями настоящих попыток студента и не в отдельной БД/файле;
 #   - LLM-классификация "правка/новая работа" + state machine "ждём ответа"
 #     как fallback, когда классификатор не уверен;
 #   - разбор да/нет-ответа студента как чистая функция, без LLM.
@@ -80,16 +81,6 @@ def new_task_ref(skill_name: str) -> str:
     # студент никогда не вводит и не видит его. Префикс skill_name — только
     # для читаемости сырых данных в БД, AttemptStore это не разбирает.
     return f"{skill_name}::{uuid.uuid4().hex[:12]}"
-
-
-def _session_task_ref(skill_name: str) -> str:
-    # Служебный task_ref, под которым в AttemptStore хранится сама история
-    # выбора активной работы для skill_name — не сам контент навыка.
-    # Содержимым (content) каждой такой Attempt-записи оказывается task_ref
-    # реальной работы, а не текст пользователя. Отдельный на каждый
-    # skill_name, иначе разные навыки перезаписывали бы один и тот же
-    # служебный ключ.
-    return f"{skill_name}__active_session"
 
 
 class RevisionClassifier(Protocol):
@@ -209,8 +200,7 @@ class ActiveSessionResolver:
         return (actor_id, skill_name) in self._awaiting_choice
 
     async def _active_task_ref(self, actor_id: str, skill_name: str) -> str | None:
-        session = await self._store.latest(actor_id, _session_task_ref(skill_name))
-        return session.content if session is not None else None
+        return await self._store.get_active_session(actor_id, skill_name)
 
     async def _is_revision(self, task_ref: str, actor_id: str, text: str) -> bool | None:
         if self._classifier is None:
@@ -226,7 +216,6 @@ class ActiveSessionResolver:
         именно вопрос отправить студенту (сам вопрос отправляет вызывающий
         код, у него текст и способ отправки для конкретного мессенджера)."""
         key = (actor_id, skill_name)
-        session_task_ref = _session_task_ref(skill_name)
 
         if key in self._awaiting_choice:
             decision = classify_session_answer(text, self._words)
@@ -244,14 +233,14 @@ class ActiveSessionResolver:
                 self._awaiting_choice.add(key)
                 return SessionResolution(task_ref=None, question_kind="reprompt_ambiguous")
 
-            await self._store.record(actor_id, session_task_ref, task_ref, None)
+            await self._store.set_active_session(actor_id, skill_name, task_ref)
             return SessionResolution(task_ref=task_ref, question_kind=None)
 
         active = await self._active_task_ref(actor_id, skill_name)
         if active is None:
             # первая работа этого actor_id в этом навыке вообще — вопрос не нужен
             task_ref = new_task_ref(skill_name)
-            await self._store.record(actor_id, session_task_ref, task_ref, None)
+            await self._store.set_active_session(actor_id, skill_name, task_ref)
             return SessionResolution(task_ref=task_ref, question_kind=None)
 
         is_revision = await self._is_revision(active, actor_id, text)

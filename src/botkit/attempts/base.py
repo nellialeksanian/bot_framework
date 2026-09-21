@@ -63,6 +63,16 @@ class AttemptStore(Protocol):
     async def get_response(self, attempt_id: str) -> BotResponse | None:
         ...
 
+    async def get_active_session(self, actor_id: str, skill_name: str) -> str | None:
+        # Служебное состояние ActiveSessionResolver (sessions.py) — "какой
+        # task_ref сейчас активен для (actor_id, skill_name)". Отдельно от
+        # attempts: это не попытка студента, а инфраструктурная закладка,
+        # переживающая рестарт процесса.
+        ...
+
+    async def set_active_session(self, actor_id: str, skill_name: str, task_ref: str) -> None:
+        ...
+
 
 async def record_revision(store: AttemptStore, actor_id: str, task_ref: str, content: str) -> Attempt:
     """Записывает новую попытку, сама находя parent_attempt_id как текущий

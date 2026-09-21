@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS bot_responses (
     support_policy_ref TEXT,
     llm_response_ref TEXT
 );
+
+CREATE TABLE IF NOT EXISTS active_sessions (
+    actor_id TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    task_ref TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (actor_id, skill_name)
+);
 """
 
 
@@ -255,5 +263,38 @@ class SQLiteAttemptStore:
                 "SELECT * FROM bot_responses WHERE attempt_id = ?", (attempt_id,)
             ).fetchone()
             return _row_to_response(row) if row is not None else None
+        finally:
+            conn.close()
+
+    async def get_active_session(self, actor_id: str, skill_name: str) -> str | None:
+        return await to_thread(self._get_active_session_sync, actor_id, skill_name)
+
+    def _get_active_session_sync(self, actor_id: str, skill_name: str) -> str | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT task_ref FROM active_sessions WHERE actor_id = ? AND skill_name = ?",
+                (actor_id, skill_name),
+            ).fetchone()
+            return row["task_ref"] if row is not None else None
+        finally:
+            conn.close()
+
+    async def set_active_session(self, actor_id: str, skill_name: str, task_ref: str) -> None:
+        await to_thread(self._set_active_session_sync, actor_id, skill_name, task_ref)
+
+    def _set_active_session_sync(self, actor_id: str, skill_name: str, task_ref: str) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO active_sessions (actor_id, skill_name, task_ref, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (actor_id, skill_name)
+                DO UPDATE SET task_ref = excluded.task_ref, updated_at = excluded.updated_at
+                """,
+                (actor_id, skill_name, task_ref, datetime.now(timezone.utc).isoformat()),
+            )
+            conn.commit()
         finally:
             conn.close()
