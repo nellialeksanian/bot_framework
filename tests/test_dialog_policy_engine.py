@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from botkit.attempts.base import Attempt
+from botkit.authority.base import Role
 from botkit.dialog_policy.base import FadingRule, Intent, SkillDescriptor, SupportPolicy
 from botkit.dialog_policy.engine import (
     DefaultDialoguePolicyEngine,
@@ -26,6 +27,17 @@ class FakeAttemptStore:
     async def latest(self, actor_id, task_ref):
         matching = [a for a in self._attempts if a.actor_id == actor_id and a.task_ref == task_ref]
         return matching[-1] if matching else None
+
+
+class FakeAuthorityGate:
+    def __init__(self, actual_role: Role):
+        self._actual_role = actual_role
+
+    async def require_role(self, platform_user_id, platform, required):
+        return self._actual_role == required
+
+    async def record_decision(self, event):
+        raise NotImplementedError
 
 
 class FakeIntentRouter:
@@ -118,6 +130,58 @@ async def test_check_attempt_gate_scoped_by_actor_and_task():
     allowed = await engine.check_attempt_gate("refine_argument", "student-1", "task-1", attempts=store)
 
     assert allowed is False  # attempt belongs to a different actor
+
+
+@pytest.mark.asyncio
+async def test_check_authority_gate_is_noop_when_no_required_role():
+    engine = DefaultDialoguePolicyEngine(intent_router=FakeIntentRouter(Intent("x", None, False)))
+    engine.register_skill("position_clarification", handler=None, support_policy=NO_GATE_POLICY, description="help the student clarify a vague position")
+
+    allowed = await engine.check_authority_gate(
+        "position_clarification", "student-1", "vk", authority=FakeAuthorityGate(Role.STUDENT)
+    )
+
+    assert allowed is True  # required_role=None (default) — открыт любой роли
+
+
+@pytest.mark.asyncio
+async def test_check_authority_gate_blocks_wrong_role():
+    engine = DefaultDialoguePolicyEngine(intent_router=FakeIntentRouter(Intent("x", None, False)))
+    engine.register_skill(
+        "grade_release", handler=None, support_policy=NO_GATE_POLICY,
+        description="release a grade to the student", required_role=Role.TEACHER,
+    )
+
+    allowed = await engine.check_authority_gate(
+        "grade_release", "student-1", "vk", authority=FakeAuthorityGate(Role.STUDENT)
+    )
+
+    assert allowed is False
+
+
+@pytest.mark.asyncio
+async def test_check_authority_gate_allows_matching_role():
+    engine = DefaultDialoguePolicyEngine(intent_router=FakeIntentRouter(Intent("x", None, False)))
+    engine.register_skill(
+        "grade_release", handler=None, support_policy=NO_GATE_POLICY,
+        description="release a grade to the student", required_role=Role.TEACHER,
+    )
+
+    allowed = await engine.check_authority_gate(
+        "grade_release", "teacher-1", "vk", authority=FakeAuthorityGate(Role.TEACHER)
+    )
+
+    assert allowed is True
+
+
+@pytest.mark.asyncio
+async def test_check_authority_gate_unknown_skill_raises():
+    engine = DefaultDialoguePolicyEngine(intent_router=FakeIntentRouter(Intent("x", None, False)))
+
+    with pytest.raises(UnknownSkillError):
+        await engine.check_authority_gate(
+            "never_registered", "student-1", "vk", authority=FakeAuthorityGate(Role.STUDENT)
+        )
 
 
 def test_render_support_block_includes_deny_patterns():

@@ -37,7 +37,10 @@ class DecisionEvent:
 
 
 class AuthorityGate(Protocol):
-    async def require_role(self, user_id: str, required: Role) -> bool:
+    async def require_role(self, platform_user_id: str, platform: str, required: Role) -> bool:
+        """Делегирует резолв роли в IdentityGate (B4/SC16) — platform обязателен
+        по той же причине, что и в IdentityGate.resolve_role(): один и тот же
+        человек имеет разные platform_user_id на разных платформах."""
         ...
 
     async def record_decision(self, event: DecisionEvent) -> None:

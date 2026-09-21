@@ -5,9 +5,9 @@
 интерфейс модуля, который не меняется в зависимости от конкретной реализации.
 
 Часть модулей уже имеет рабочую реализацию поверх `base.py` (`attempts`,
-`dialog_policy`, `evidence`, `rag`, `rubric`, `simulation` — см. пометки в
-дереве структуры ниже), часть остаётся только контрактом без кода —
-реализация появляется по мере того, как конкретному боту требуется
+`authority`, `dialog_policy`, `evidence`, `rag`, `rubric`, `simulation` — см.
+пометки в дереве структуры ниже), часть остаётся только контрактом без
+кода — реализация появляется по мере того, как конкретному боту требуется
 конкретный модуль, а не заранее для всех сразу.
 
 Пакет называется `botkit`, устанавливается как обычная Python-библиотека
@@ -27,7 +27,7 @@ src/botkit/
 ├── dialog_policy/ B1 Dialogue Policy Engine   (SC01+SC06) — реализован (engine.py, intent_router.py)
 ├── attempts/     B2  Attempt & Revision Store (SC07)      — реализован (sqlite_store.py, sessions.py)
 ├── rubric/       B3  Rubric & Taxonomy Store  (SC08)      — реализован (sqlite_store.py)
-├── authority/    B4  Human Authority Gate     (SC14+SC16) — только base.py (Protocol)
+├── authority/    B4  Human Authority Gate     (SC14+SC16) — реализован (gate.py, identity_env.py)
 ├── evidence/     B5  Evidence & Citation Layer (SC04+SC05) — реализован (llm_checker.py, sqlite_store.py)
 └── simulation/   C1  Simulation & Scenario Engine (SC02+SC03) — реализован (persona.py, scenario.py, routing.py)
 
@@ -104,6 +104,10 @@ from botkit.dialog_policy.base import SupportPolicy
 - [«Evidence — как пользоваться.md»](docs/Evidence%20—%20как%20пользоваться.md) —
   `botkit.evidence`: `LLMEvidenceChecker`, `SQLiteEvidenceStore`, `verify_and_record`,
   связь с A3 (RAG retrieval vs entailment).
+- [«Authority — как пользоваться.md»](docs/Authority%20—%20как%20пользоваться.md) —
+  практическое руководство по `botkit.authority`: EnvIdentityGate + AuthorityGate,
+  привязка required_role к навыку, и почему DecisionEvent (SC14) пока реализован,
+  но не подключён ни к одному навыку.
 - [«Simulation — как пользоваться.md»](docs/Simulation%20—%20как%20пользоваться.md) —
   `botkit.simulation`: `PersonaSimulator`, `ScenarioGenerator`, интеграция с B1 через `route_or_continue`.
 
