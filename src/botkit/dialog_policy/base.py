@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
 from botkit.attempts.base import AttemptStore
+from botkit.authority.base import AuthorityGate, Role
 
 
 @dataclass
@@ -101,7 +102,13 @@ class DialoguePolicyEngine(Protocol):
         handler: SkillHandler,
         support_policy: SupportPolicy,
         description: str,
+        required_role: Role | None = None,
     ) -> None:
+        """required_role — привязка skill к роли (B4/SC14+SC16). None (по
+        умолчанию) значит "любая роль" — не всякий навык нуждается в
+        авторизации (напр. position_clarification открыт студенту и
+        преподавателю одинаково); только навыки вроде "выставить оценку"
+        или "показать чужую работу" задают required_role явно."""
         ...
 
     async def check_attempt_gate(
@@ -111,6 +118,16 @@ class DialoguePolicyEngine(Protocol):
         Если зарегистрированная для skill SupportPolicy.attempt_gate=False,
         всегда возвращает True (N/A — не всякая семья навыков имеет
         предшествующую человеческую попытку, напр. C1 deliberate-defect)."""
+        ...
+
+    async def check_authority_gate(
+        self, skill: str, platform_user_id: str, platform: str, authority: AuthorityGate
+    ) -> bool:
+        """B4/SC14+SC16, зеркало check_attempt_gate(). False -> вызов навыка
+        блокируется, роль пользователя не совпадает с required_role,
+        зарегистрированной для skill. Если register_skill() был вызван с
+        required_role=None, всегда возвращает True (N/A — навык открыт всем
+        ролям), симметрично attempt_gate=False в check_attempt_gate()."""
         ...
 
     def render_support_block(self, skill: str, turn_index: int) -> str:

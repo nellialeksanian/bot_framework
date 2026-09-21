@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from botkit.attempts.base import AttemptStore
+from botkit.authority.base import AuthorityGate, Role
 from botkit.dialog_policy.base import (
     DialoguePolicyEngine,
     Intent,
@@ -41,6 +42,7 @@ class DefaultDialoguePolicyEngine(DialoguePolicyEngine):
         self._policies: dict[str, SupportPolicy] = {}
         self._handlers: dict[str, SkillHandler] = {}
         self._descriptions: dict[str, str] = {}
+        self._required_roles: dict[str, Role | None] = {}
 
     def register_skill(
         self,
@@ -48,10 +50,12 @@ class DefaultDialoguePolicyEngine(DialoguePolicyEngine):
         handler: SkillHandler,
         support_policy: SupportPolicy,
         description: str,
+        required_role: Role | None = None,
     ) -> None:
         self._handlers[name] = handler
         self._policies[name] = support_policy
         self._descriptions[name] = description
+        self._required_roles[name] = required_role
 
     def load_policy_overrides(self, policies_dir: str | Path) -> None:
         """Накатывает YAML-файлы из policies_dir поверх уже зарегистрированных
@@ -92,6 +96,22 @@ class DefaultDialoguePolicyEngine(DialoguePolicyEngine):
         if not policy.attempt_gate:
             return True  # N/A для этой семьи навыков — не ошибка, см. CP11A
         return await attempts.latest(actor_id, task_ref) is not None
+
+    async def check_authority_gate(
+        self, skill: str, platform_user_id: str, platform: str, authority: AuthorityGate
+    ) -> bool:
+        required_role = self._require_required_role(skill)
+        if required_role is None:
+            return True  # N/A для этого навыка — открыт любой роли, см. CP11A-аналогия
+        return await authority.require_role(platform_user_id, platform, required_role)
+
+    def _require_required_role(self, skill: str) -> Role | None:
+        if skill not in self._required_roles:
+            raise UnknownSkillError(
+                f"no SupportPolicy registered for skill {skill!r} — "
+                "call register_skill() before check_authority_gate()"
+            )
+        return self._required_roles[skill]
 
     def render_support_block(self, skill: str, turn_index: int) -> str:
         policy = self._require_policy(skill)
