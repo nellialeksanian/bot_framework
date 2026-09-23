@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol
 
 
 @dataclass
@@ -15,21 +15,19 @@ class ExtractedContent:
     structured_data: dict | None
     warnings: list[str]
     source_confidence: Literal["high", "low", "unknown"]
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Extractor(Protocol):
     kind: Literal["document", "image", "audio"]
 
-    async def supports(self, mime_type: str) -> bool:
-        ...
+    async def supports(self, mime_type: str) -> bool: ...
 
-    async def extract(self, data: bytes, mime_type: str) -> ExtractedContent:
-        ...
+    async def extract(self, data: bytes, mime_type: str) -> ExtractedContent: ...
 
 
 class ContentExtractionService(Protocol):
-    def register(self, extractor: Extractor) -> None:
-        ...
+    def register(self, extractor: Extractor) -> None: ...
 
     async def extract(self, attachment) -> ExtractedContent:
         """attachment: botkit.transport.base.Attachment"""
