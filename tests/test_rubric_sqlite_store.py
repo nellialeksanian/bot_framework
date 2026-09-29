@@ -137,3 +137,99 @@ async def test_data_survives_reopening_the_store(tmp_path):
 
     assert reopened_active.package_id == package.package_id
     assert len(reopened_ratings) == 1
+
+
+async def test_record_rating_without_scores_defaults_to_empty_dict(store):
+    package = await store.register_package("essay_grading", _dims("thesis"), activate=True)
+
+    rating = await store.record_rating(
+        target_attempt_id="attempt-1", package_ref=package.package_id,
+        criterion_version=package.version, rater_id="teacher-42",
+        labels_found=["dim_thesis"], evidence=["quote"],
+    )
+
+    assert rating.scores == {}
+
+
+async def test_record_rating_stores_and_returns_scores(store):
+    package = await store.register_package("essay_grading", _dims("thesis"), activate=True)
+
+    rating = await store.record_rating(
+        target_attempt_id="attempt-1", package_ref=package.package_id,
+        criterion_version=package.version, rater_id="teacher-42",
+        labels_found=["dim_thesis"], evidence=["quote"],
+        scores={"dim_thesis": 1.0},
+    )
+    fetched = await store.get_ratings("attempt-1")
+
+    assert rating.scores == {"dim_thesis": 1.0}
+    assert fetched[0].scores == {"dim_thesis": 1.0}
+
+
+async def test_score_scale_and_scoring_rule_survive_reopening_the_store(tmp_path):
+    db_path = str(tmp_path / "rubric.sqlite3")
+    criterion = Criterion(
+        dimension_id="logical_basis_unity", label="Единство логического основания",
+        anchor_examples=["a"], score_scale=(0.0, 1.0, 2.0),
+        scoring_rule="2 балла: ...; 1 балл: ...; 0 баллов: ...",
+    )
+    store1 = SQLiteRubricStore(db_path)
+    await store1.register_package("putilin.versions", [criterion], activate=True)
+
+    store2 = SQLiteRubricStore(db_path)
+    reopened = await store2.get_active_package("putilin.versions")
+
+    assert reopened.dimensions[0].score_scale == (0.0, 1.0, 2.0)
+    assert reopened.dimensions[0].scoring_rule == "2 балла: ...; 1 балл: ...; 0 баллов: ..."
+
+
+async def test_reopening_a_pre_scores_json_database_does_not_raise(tmp_path):
+    """A database written before the score_scale/scoring_rule/scores
+    extension has no scores_json column and no score_scale/scoring_rule keys
+    in dimensions_json. SQLiteRubricStore must migrate the schema and read
+    old rows with the new dataclass defaults, not raise or lose data."""
+    import json
+    import sqlite3
+
+    db_path = str(tmp_path / "old.sqlite3")
+    conn = sqlite3.connect(db_path)
+    conn.executescript(
+        """
+        CREATE TABLE criterion_packages (
+            package_id TEXT PRIMARY KEY, domain TEXT NOT NULL, version INTEGER NOT NULL,
+            dimensions_json TEXT NOT NULL, owner_status TEXT NOT NULL
+        );
+        CREATE TABLE rater_records (
+            rater_record_id TEXT PRIMARY KEY, target_attempt_id TEXT NOT NULL,
+            package_ref TEXT NOT NULL, criterion_version INTEGER NOT NULL,
+            rater_id TEXT NOT NULL, rater_qualification TEXT,
+            labels_found_json TEXT NOT NULL, evidence_json TEXT NOT NULL
+        );
+        """
+    )
+    old_dimensions = json.dumps([{"dimension_id": "x", "label": "X", "anchor_examples": []}])
+    conn.execute(
+        "INSERT INTO criterion_packages VALUES (?, ?, ?, ?, ?)",
+        ("pkg-1", "essay_grading", 1, old_dimensions, "active"),
+    )
+    conn.execute(
+        "INSERT INTO rater_records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("r1", "attempt-1", "pkg-1", 1, "teacher-42", None, "[]", "[]"),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = SQLiteRubricStore(db_path)
+    package = await migrated.get_active_package("essay_grading")
+    ratings = await migrated.get_ratings("attempt-1")
+
+    assert package.dimensions[0].score_scale == (0.0, 1.0)
+    assert package.dimensions[0].scoring_rule == ""
+    assert ratings[0].scores == {}
+
+    # And the migrated store is fully writable afterwards (ALTER TABLE
+    # actually landed, not just tolerated on read).
+    await migrated.record_rating(
+        target_attempt_id="attempt-1", package_ref="pkg-1", criterion_version=1,
+        rater_id="teacher-42", labels_found=[], evidence=[], scores={"x": 1.0},
+    )

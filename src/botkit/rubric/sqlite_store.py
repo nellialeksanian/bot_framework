@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS rater_records (
     rater_id TEXT NOT NULL,
     rater_qualification TEXT,
     labels_found_json TEXT NOT NULL,
-    evidence_json TEXT NOT NULL
+    evidence_json TEXT NOT NULL,
+    scores_json TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_ratings_target
     ON rater_records(target_attempt_id);
@@ -52,13 +53,32 @@ class NoActivePackageError(Exception):
 
 def _dimensions_to_json(dimensions: list[Criterion]) -> str:
     return json.dumps([
-        {"dimension_id": d.dimension_id, "label": d.label, "anchor_examples": d.anchor_examples}
+        {
+            "dimension_id": d.dimension_id,
+            "label": d.label,
+            "anchor_examples": d.anchor_examples,
+            "score_scale": list(d.score_scale),
+            "scoring_rule": d.scoring_rule,
+        }
         for d in dimensions
     ])
 
 
 def _dimensions_from_json(raw: str) -> list[Criterion]:
-    return [Criterion(**d) for d in json.loads(raw)]
+    # score_scale/scoring_rule — .get() с дефолтами Criterion, не raw[...]:
+    # строки, записанные ДО этого расширения B3, не имеют этих ключей в
+    # своём dimensions_json — старые CriterionPackage обязаны читаться так
+    # же, как раньше (score_scale=(0.0, 1.0), scoring_rule=""), не падать.
+    return [
+        Criterion(
+            dimension_id=d["dimension_id"],
+            label=d["label"],
+            anchor_examples=d["anchor_examples"],
+            score_scale=tuple(d.get("score_scale", (0.0, 1.0))),
+            scoring_rule=d.get("scoring_rule", ""),
+        )
+        for d in json.loads(raw)
+    ]
 
 
 def _row_to_package(row: sqlite3.Row) -> CriterionPackage:
@@ -81,6 +101,7 @@ def _row_to_rating(row: sqlite3.Row) -> RaterRecord:
         rater_qualification=row["rater_qualification"],
         labels_found=json.loads(row["labels_found_json"]),
         evidence=json.loads(row["evidence_json"]),
+        scores=json.loads(row["scores_json"]),
     )
 
 
@@ -94,9 +115,21 @@ class SQLiteRubricStore:
         conn = self._connect()
         try:
             conn.executescript(_SCHEMA)
+            self._migrate_scores_column(conn)
             conn.commit()
         finally:
             conn.close()
+
+    def _migrate_scores_column(self, conn: sqlite3.Connection) -> None:
+        # CREATE TABLE IF NOT EXISTS в _SCHEMA не добавляет колонку в уже
+        # существующую таблицу — БД, созданные ДО scores_json (это
+        # расширение B3), нуждаются в явном ALTER TABLE. Идемпотентно:
+        # проверяет наличие колонки перед добавлением, не полагается на
+        # try/except вокруг ALTER TABLE (тот бросает разные ошибки на
+        # разных версиях sqlite3).
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(rater_records)")}
+        if "scores_json" not in columns:
+            conn.execute("ALTER TABLE rater_records ADD COLUMN scores_json TEXT NOT NULL DEFAULT '{}'")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path)
@@ -208,6 +241,7 @@ class SQLiteRubricStore:
         evidence: list[str],
         *,
         rater_qualification: str | None = None,
+        scores: dict[str, float] | None = None,
     ) -> RaterRecord:
         return await to_thread(
             self._record_rating_sync,
@@ -218,6 +252,7 @@ class SQLiteRubricStore:
             labels_found,
             evidence,
             rater_qualification,
+            scores,
         )
 
     def _record_rating_sync(
@@ -229,6 +264,7 @@ class SQLiteRubricStore:
         labels_found: list[str],
         evidence: list[str],
         rater_qualification: str | None,
+        scores: dict[str, float] | None,
     ) -> RaterRecord:
         rating = RaterRecord(
             rater_record_id=str(uuid.uuid4()),
@@ -239,6 +275,7 @@ class SQLiteRubricStore:
             rater_qualification=rater_qualification,
             labels_found=labels_found,
             evidence=evidence,
+            scores=scores or {},
         )
         conn = self._connect()
         try:
@@ -252,8 +289,8 @@ class SQLiteRubricStore:
                 """
                 INSERT INTO rater_records
                     (rater_record_id, target_attempt_id, package_ref, criterion_version,
-                     rater_id, rater_qualification, labels_found_json, evidence_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     rater_id, rater_qualification, labels_found_json, evidence_json, scores_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rating.rater_record_id,
@@ -264,6 +301,7 @@ class SQLiteRubricStore:
                     rating.rater_qualification,
                     json.dumps(rating.labels_found),
                     json.dumps(rating.evidence),
+                    json.dumps(rating.scores),
                 ),
             )
             conn.commit()

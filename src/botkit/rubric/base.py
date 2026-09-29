@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 
@@ -23,6 +23,27 @@ class Criterion:
     dimension_id: str
     label: str
     anchor_examples: list[str]
+    # score_scale/scoring_rule — не всякий CriterionPackage использует
+    # числовые баллы (labels_found одни уже достаточны для чистой
+    # бинарной "нарушен/не нарушен" рубрики) — оба поля опциональны с
+    # дефолтом на самую частую шкалу (0/1), не ломают существующие
+    # CriterionPackage, созданные до этого расширения.
+    #
+    # score_scale — явный набор допустимых числовых значений, не
+    # max_score+allows_half: разные критерии одного пакета встречаются с
+    # разными и не всегда равномерными шкалами (напр. 0/1/2 для одного
+    # критерия, 0/0.5/1 для другого в том же пакете — см. живой пример в
+    # боте "Путилин", Приложение 1 ТЗ), max_score/allows_half не выразил
+    # бы это без дополнительных спецправил.
+    score_scale: tuple[float, ...] = (0.0, 1.0)
+    # scoring_rule — текст условия "при каком признаке в работе студента
+    # какой балл ставится" (напр. "2 балла: ...; 1 балл: ...; 0 баллов:
+    # ..."), не то же самое, что anchor_examples (лингвистические маркеры
+    # ошибки/её отсутствия) — правило и маркеры дополняют друг друга в
+    # промпте, оба нужны модели, чтобы не просто узнать нарушение, но и
+    # знать, каким числом его оценить. Пустая строка (дефолт) означает
+    # "правило не задано" — render_criteria_block() тогда не выводит его.
+    scoring_rule: str = ""
 
 
 @dataclass
@@ -44,6 +65,16 @@ class RaterRecord:
     rater_qualification: str | None
     labels_found: list[str]
     evidence: list[str]
+    # scores — опционально: {dimension_id: числовой балл}, только для
+    # dimension_id из CriterionPackage.dimensions, где Criterion.score_scale
+    # реально используется (не (0.0, 1.0) по умолчанию). Пустой dict —
+    # легитимное значение для рубрик, где числовые баллы не нужны, labels_found
+    # уже достаточно (напр. gb_edu_bot::feedback — бинарная "нарушен/не
+    # нарушен" рубрика, никогда не заполняет scores). Не заменяет
+    # labels_found — labels_found остаётся тем, что модель ОБЯЗАНА вернуть
+    # (какие критерии затронуты), scores — тем, что она возвращает
+    # ДОПОЛНИТЕЛЬНО, когда критерий использует более чем двоичную шкалу.
+    scores: dict[str, float] = field(default_factory=dict)
 
 
 class TimeRange:
@@ -84,9 +115,12 @@ class RubricStore(Protocol):
         evidence: list[str],
         *,
         rater_qualification: str | None = None,
+        scores: dict[str, float] | None = None,
     ) -> RaterRecord:
         # инвариант: append-only, как Attempt в B2 — никогда не перезаписывает
         # существующую RaterRecord, только добавляет новую.
+        # scores=None (по умолчанию) -> RaterRecord.scores = {} — рубрики без
+        # числовых баллов не обязаны передавать этот параметр вовсе.
         ...
 
     async def get_ratings(self, target_attempt_id: str) -> list[RaterRecord]:
@@ -97,13 +131,20 @@ class RubricStore(Protocol):
 
 
 def _dimensions_equal(a: list[Criterion], b: list[Criterion]) -> bool:
-    # Сравнение по содержимому (dimension_id, label, anchor_examples), а не
-    # по идентичности объектов — код каждый раз создаёт новые Criterion при
-    # запуске процесса, объекты никогда не будут одним и тем же объектом.
+    # Сравнение по содержимому (все поля Criterion), а не по идентичности
+    # объектов — код каждый раз создаёт новые Criterion при запуске
+    # процесса, объекты никогда не будут одним и тем же объектом.
+    # score_scale/scoring_rule включены в сравнение — правка шкалы баллов
+    # или правила их выставления это такое же изменение критерия, как
+    # правка label, и обязано версионировать пакет так же.
     if len(a) != len(b):
         return False
     return all(
-        x.dimension_id == y.dimension_id and x.label == y.label and x.anchor_examples == y.anchor_examples
+        x.dimension_id == y.dimension_id
+        and x.label == y.label
+        and x.anchor_examples == y.anchor_examples
+        and x.score_scale == y.score_scale
+        and x.scoring_rule == y.scoring_rule
         for x, y in zip(a, b)
     )
 
@@ -152,10 +193,19 @@ def render_criteria_block(package: CriterionPackage) -> str:
     dimension_id каждого Criterion — это и есть допустимое значение для
     labels_found в RaterRecord (см. record_rating()), поэтому промпт должен
     просить модель возвращать именно dimension_id, не label (label можно
-    переформулировать при следующей версии пакета, dimension_id — нет)."""
+    переформулировать при следующей версии пакета, dimension_id — нет).
+
+    scoring_rule выводится только если непусто (дефолт "" — легитимное
+    "правило не задано" для чисто бинарных labels_found-рубрик, см.
+    Criterion). score_scale выводится всегда, когда scoring_rule есть —
+    без него правило ссылалось бы на баллы, о допустимости которых модель
+    не проинформирована явно."""
     lines = [f"## Критерии оценки ({package.domain}, версия {package.version})"]
     for dim in package.dimensions:
         lines.append(f"### {dim.dimension_id}: {dim.label}")
         for example in dim.anchor_examples:
             lines.append(f"- {example}")
+        if dim.scoring_rule:
+            scale_text = "/".join(str(s) for s in dim.score_scale)
+            lines.append(f"Шкала баллов: {scale_text}. Правило: {dim.scoring_rule}")
     return "\n".join(lines)
