@@ -36,6 +36,7 @@ class ExtractionConfig:
     pdf_min_text_chars: int = 30
     vision_timeout: float = 180
     vision_max_tokens: int = 8192
+    audio_timeout: float = 600
 
     def __post_init__(self):
         if self.pdf_mode not in {"auto", "text", "vision"}:
@@ -54,6 +55,7 @@ class ExtractionConfig:
             max_text_chars=int(os.getenv("EXTRACTION_MAX_TEXT_CHARS", "200000")),
             render_dpi=int(os.getenv("EXTRACTION_RENDER_DPI", "144")),
             vision_timeout=float(os.getenv("EXTRACTION_VISION_TIMEOUT", "180")),
+            audio_timeout=float(os.getenv("EXTRACTION_AUDIO_TIMEOUT", "600")),
         )
 
     def check_bytes(self, data: bytes) -> None:
